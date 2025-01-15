@@ -6,6 +6,7 @@
 #include <netinet/in.h>     //  Thư viện chứa các hằng số, cấu trúc khi sử dụng địa chỉ trên internet
 #include <arpa/inet.h>
 #include <unistd.h>
+#include <signal.h>
 
 #define MAX_BUFF_SIZE 1024
 
@@ -19,7 +20,6 @@ void data_func(int server_fd, int SensorNodeID)
 
     while (1) {
         memset(sendbuff, '0', MAX_BUFF_SIZE);
- 
         printf("Please enter the temperature: ");
         fgets(temp_input, MAX_BUFF_SIZE, stdin);
 
@@ -34,8 +34,14 @@ void data_func(int server_fd, int SensorNodeID)
         /* Gửi thông tin đến server bằng hàm write */
         numb_write = write(server_fd, sendbuff, strlen(sendbuff));
         if (numb_write == -1) {
-            perror("write failed");
-            exit(EXIT_FAILURE);
+            if (errno == EPIPE) {
+                /* Socket đã bị đóng từ phía bên server */
+                printf("Server closed the connection\n");
+                break;
+            } else {
+                perror("write failed");
+                exit(EXIT_FAILURE);
+            }
         }
         if (strncmp("exit", temp_input, 4) == 0) {
             printf("Client exit ...\n");
@@ -47,6 +53,9 @@ void data_func(int server_fd, int SensorNodeID)
 
 int main(int argc, char *argv[])
 {
+    /* Bỏ qua tín hiệu SIGPIPE */
+    signal(SIGPIPE, SIG_IGN);
+
     int portno;
     int SensorNodeID;
     int server_fd;
