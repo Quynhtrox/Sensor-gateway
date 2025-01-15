@@ -66,23 +66,19 @@ void *log_events(void *args) {
 }
 
 //Hàm ghi vào gateway.log
-void wr_log(void *args) {
+void wr_log(void *args, int log_fd) {
     static int a = 0;
-    a++;
-    //a là sequence_number
-
+    a++; //a là sequence_number
     char *message = (char *)args;
-
-    FILE *log = fopen(LOG_FILE, "a");
+    char buffer[MAX_BUFFER_SIZE];
 
     time_t current_time = time(NULL);
     struct tm *time_info = localtime(&current_time);
     char timestamp[20];
     strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", time_info);
 
-    fprintf(log, "%d. %s %s\n", a, timestamp, message);
-    fflush(log);
-    fclose(log);
+    snprintf(buffer,sizeof(buffer),"%d. (%s)    %s.\n", a, timestamp, message);
+    write(log_fd, buffer, strlen(buffer));
 }
 
 //Add data into buffer
@@ -355,7 +351,17 @@ static void *thr_storage(void *args) {
             //Chèn dữ liệu vào bảng
             char sql_query[MAX_BUFFER_SIZE];
             snprintf(sql_query, sizeof(sql_query),
-                    "INSERT INTO Sensor_data (SENSOR_ID, Temperature) VALUES (%d, %.2f);", data.SensorNodeID, data.temperature);
+                    "INSERT OR REPLACE INTO Sensor_data (SENSOR_ID, Temperature) VALUES (%d, %.2f);", data.SensorNodeID, data.temperature);
+            // snprintf(sql_query, sizeof(sql_query),
+            //         "MERGE INTO Sensor_data AS target" \
+            //         "USING (SELECT %d AS SENSOR_ID, %.2f AS Temperature) AS source" \
+            //         "ON target.SENSOR_ID = source.SENSOR_ID" \
+            //         "WHEN MATCHED THEN" \
+            //         "   UPDATE SET Temperature = source.Temperature" \
+            //         "WHEN NOT MATCHED THEN" \
+            //         "   INSERT (SENSOR_ID, Temperature)" \
+            //         "   VALUES (source.SENSOR_ID, source.Temperature);", 
+            //         data.SensorNodeID, data.temperature );
             rc = sqlite3_exec(db, sql_query, NULL, 0, &errMsg);
             if (rc != SQLITE_OK) {
                 snprintf(log_message, sizeof(log_message), "Data insertion failed\n");
@@ -376,20 +382,21 @@ void log_process() {
     printf("Im log process. My PID: %d\n", getpid());
 
     mkfifo(FIFO_FILE, 0666);
-    int fd;
+    int fifo_fd, log_fd;
     char buff[MAX_BUFFER_SIZE];
 
-    fd  = open(FIFO_FILE, O_RDONLY);
+    fifo_fd  = open(FIFO_FILE, O_RDONLY);
+    log_fd = open(LOG_FILE, O_WRONLY | O_CREAT | O_APPEND, 0666);
 
     while(1) {
-        ssize_t bytes = read(fd, buff, sizeof(buff) - 1);
+        ssize_t bytes = read(fifo_fd, buff, sizeof(buff) - 1);
         if (bytes > 0) {
             buff[bytes] = '\0';
-            wr_log(&buff);
+            wr_log(&buff, log_fd);
         }
     }
-
-    close(fd);
+    close(log_fd);
+    close(fifo_fd);
     exit(0);
 }
 
