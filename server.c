@@ -49,6 +49,49 @@ typedef struct
     Shared_data *shared_data;
 }Thread_args;
 
+void *log_events(void *args);
+void wr_log(void *args, int log_fd);
+void add_data(Shared_data *shared, Sensor_data data);
+Sensor_data get_data(Shared_data *shared);
+int make_socket_non_blocking(int socket_fd);
+static void *thr_connection(void *args);
+static void *thr_data(void *args);
+static void *thr_storage(void *args);
+void log_process();
+
+int main(int argc, char *argv[])
+{
+    if (argc < 2) {
+        printf("No port provided\n");
+        exit(EXIT_FAILURE);
+    }
+
+    int port = atoi(argv[1]);
+    pid_t pid;
+    Shared_data shared_data = {.head = 0, .tail = 0};
+    Thread_args thread_ares = {.port = port, .shared_data = &shared_data};
+    pthread_t threadconn, threaddata, threadstorage;
+
+    pid = fork();
+    if (pid == 0) {
+        log_process();
+
+    } else if (pid > 0) { //Parent process
+        printf("Im main process. My PID: %d\n", getpid());
+
+        pthread_create(&threadconn, NULL, &thr_connection, &thread_ares);
+        pthread_create(&threaddata, NULL, &thr_data, &shared_data);
+        pthread_create(&threadstorage, NULL, &thr_storage, &shared_data);
+        
+        wait(NULL);
+    }
+
+    pthread_join(threadconn, NULL);
+    pthread_join(threaddata, NULL);
+    pthread_join(threadstorage, NULL);
+    return 0;
+}
+
 //Hàm ghi vào FIFO
 void *log_events(void *args) {
     char *message = (char *)args;
@@ -182,6 +225,12 @@ static void *thr_connection(void *args) {
                 while ((new_socket_fd = accept(server_fd, (struct sockaddr *)&sensoraddr, (socklen_t *)&ThreadArgs->len)) != -1) {
                     printf("New connection accepted on port %d\n", ThreadArgs->port); 
 
+                    // Ghi log new connection
+                    char log_message[MAX_BUFFER_SIZE];
+                    snprintf(log_message, sizeof(log_message),
+                            "There is a new sensor connection into port %d\n", ThreadArgs->port);
+                    log_events(log_message);
+
                     // Đặt socket client ở chế độ non-blocking
                     make_socket_non_blocking(new_socket_fd);
 
@@ -224,48 +273,14 @@ static void *thr_connection(void *args) {
 
                     //Ghi log closed
                     char log_message[MAX_BUFFER_SIZE];
-                    snprintf(log_message, sizeof(log_message), "The sensor node with %d has closed the connection\n", data.SensorNodeID);
+                    snprintf(log_message, sizeof(log_message),
+                            "The sensor has closed the connection\n");
                     log_events(log_message);
                     close(client_fd);
                     break;
                 }
             }
         }
-
-
-        //{ new_socket_fd = accept(server_fd, (struct sockaddr *)&sensoraddr, (socklen_t *)&ThreadArgs->len);
-        // if (new_socket_fd >= 0) {
-        //     printf("New connection accepted on port %d\n", ThreadArgs->port);
-
-        //     char buffer[MAX_BUFFER_SIZE];
-        //     read(new_socket_fd, buffer, MAX_BUFFER_SIZE);
-            
-        //     if (strncmp("exit", buffer, 4) == 0) {
-        //         system("clear");
-
-        //         Sensor_data data = get_data(shared);
-
-        //         //Ghi log closed
-        //         char log_message[MAX_BUFFER_SIZE];
-        //         snprintf(log_message, sizeof(log_message), "The sensor node with %d has closed the connection\n", data.SensorNodeID);
-        //         log_events(log_message);
-        //         close(new_socket_fd);
-        //         break;
-        //     }
-
-        //     // Giải mã dữ liệu từ sensor
-        //     Sensor_data data;
-        //     sscanf(buffer, "%d %f", &data.SensorNodeID, &data.temperature);
-
-        //     //Thêm dữ liệu vào shared buffer
-        //     add_data(shared, data);
-
-        //     //Ghi log new connection
-        //     char log_message[MAX_BUFFER_SIZE];
-        //     snprintf(log_message, sizeof(log_message), "A sensor node with %d has opened a new connection\n", data.SensorNodeID);
-        //     log_events(log_message);
-        //     close(new_socket_fd);
-        // }}
     }
     // close(new_socket_fd);
     close(server_fd);
@@ -288,10 +303,14 @@ static void *thr_data(void *args) {
         if (data.SensorNodeID !=0 ) {
             char log_message[MAX_BUFFER_SIZE];
             if (data.temperature > 30.0) {
-                snprintf(log_message, sizeof(log_message), "The sensor node with %d reports it’s too hot (running avg temperature = %.1f)\n", data.SensorNodeID, data.temperature);
+                snprintf(log_message, sizeof(log_message),
+                        "The sensor node with %d reports it’s too hot (running avg temperature = %.1f)\n",
+                        data.SensorNodeID, data.temperature);
                 log_events(log_message);
             } else if (data.temperature < 15) {
-                snprintf(log_message, sizeof(log_message), "The sensor node with %d reports it’s too cold (running avg temperature = %.1f)\n", data.SensorNodeID, data.temperature);
+                snprintf(log_message, sizeof(log_message),
+                        "The sensor node with %d reports it’s too cold (running avg temperature = %.1f)\n",
+                        data.SensorNodeID, data.temperature);
                 log_events(log_message);
             }
         }
@@ -304,64 +323,51 @@ static void *thr_data(void *args) {
 //Storage manager thread
 static void *thr_storage(void *args) {
     printf("i'm thread storage\n");
-    
+    sqlite3 *db;        //Con trỏ cơ sở dữ liệu
+    char *errMsg = 0;   //Thông báo mã lỗi
+    int rc;             //Mã trả về từ SQLite
+    const char *sql;    //Câu lệnh SQL
+    char log_message[MAX_BUFFER_SIZE];
+    char sql_query[MAX_BUFFER_SIZE];
+
+    rc = sqlite3_open(SQL_database, &db); //Mở hoặc tạo database
+    if (rc != SQLITE_OK) {
+        snprintf(log_message, sizeof(log_message),
+                "Connection to SQL server lost.\n");
+        log_events(log_message);
+    } else if (rc == SQLITE_OK) {
+        snprintf(log_message, sizeof(log_message),
+                "Connection to SQL server established.\n");
+        log_events(log_message);
+    }
+    //Thực thi câu lệnh SQL
+    sql =   "CREATE TABLE IF NOT EXISTS Sensor_data (" \
+            "SENSOR_ID INTERGER PRIMARY KEY," \
+            "Temperature FLOAT );";
+    //Tạo bảng
+    rc = sqlite3_exec(db, sql, NULL, 0, &errMsg);
+    if (rc != SQLITE_OK) {
+        snprintf(log_message, sizeof(log_message),
+                "Created new table %s failed.\n", SQL_database);
+        log_events(log_message);
+    } else {
+        snprintf(log_message, sizeof(log_message),
+                "New table %s created.\n",SQL_database);
+        log_events(log_message);
+    }
 
     while (1) {
         pthread_mutex_lock(&lock);
         pthread_cond_wait(&cond, &lock);
-        static int b = 0;
-        b++;
-
         Shared_data *shared = (Shared_data *)args;
         
-        sqlite3 *db;        //Con trỏ cơ sở dữ liệu
-        char *errMsg = 0;   //Thông báo mã lỗi
-        int rc;             //Mã trả về từ SQLite
-        const char *sql;    //Câu lệnh SQL
         Sensor_data data = get_data(shared);
         if (data.SensorNodeID != 0) {
             //Ghi dữ liệu vào SQL database
-            char log_message[MAX_BUFFER_SIZE];
-            rc = sqlite3_open(SQL_database, &db); //Mở hoặc tạo database
-            
-            if ((rc != SQLITE_OK) & (b <= 1)) {
-                snprintf(log_message, sizeof(log_message), "Connection to SQL server lost.\n");
-                log_events(log_message);
-            } else if ((rc == SQLITE_OK) & (b <= 1)) {
-                snprintf(log_message, sizeof(log_message), "Connection to SQL server established.\n");
-                log_events(log_message);
-            }
-            //Thực thi câu lệnh SQL
-            if (b <= 1) {
-                sql =   "CREATE TABLE IF NOT EXISTS Sensor_data (" \
-                        "SENSOR_ID INTERGER PRIMARY KEY," \
-                        "Temperature FLOAT );";
-
-                //Tạo bảng
-                rc = sqlite3_exec(db, sql, NULL, 0, &errMsg);
-                if (rc != SQLITE_OK) {
-                    snprintf(log_message, sizeof(log_message), "Created new table %s failed.\n", SQL_database);
-                    log_events(log_message);
-                } else {
-                    snprintf(log_message, sizeof(log_message), "New table %s created.\n",SQL_database);
-                    log_events(log_message);
-                }
-            }
-
             //Chèn dữ liệu vào bảng
-            char sql_query[MAX_BUFFER_SIZE];
             snprintf(sql_query, sizeof(sql_query),
-                    "INSERT OR REPLACE INTO Sensor_data (SENSOR_ID, Temperature) VALUES (%d, %.2f);", data.SensorNodeID, data.temperature);
-            // snprintf(sql_query, sizeof(sql_query),
-            //         "MERGE INTO Sensor_data AS target" \
-            //         "USING (SELECT %d AS SENSOR_ID, %.2f AS Temperature) AS source" \
-            //         "ON target.SENSOR_ID = source.SENSOR_ID" \
-            //         "WHEN MATCHED THEN" \
-            //         "   UPDATE SET Temperature = source.Temperature" \
-            //         "WHEN NOT MATCHED THEN" \
-            //         "   INSERT (SENSOR_ID, Temperature)" \
-            //         "   VALUES (source.SENSOR_ID, source.Temperature);", 
-            //         data.SensorNodeID, data.temperature );
+                    "INSERT OR REPLACE INTO Sensor_data (SENSOR_ID, Temperature) VALUES (%d, %.2f);",
+                    data.SensorNodeID, data.temperature);
             rc = sqlite3_exec(db, sql_query, NULL, 0, &errMsg);
             if (rc != SQLITE_OK) {
                 snprintf(log_message, sizeof(log_message), "Data insertion failed\n");
@@ -370,11 +376,10 @@ static void *thr_storage(void *args) {
                 snprintf(log_message, sizeof(log_message), "Successful data insertion\n");
                 log_events(log_message);
             }
-            pthread_mutex_unlock(&lock);
-
-            sqlite3_close(db);
         }
+        pthread_mutex_unlock(&lock);
     }
+    sqlite3_close(db);
 }
 
 //Child process
@@ -384,7 +389,6 @@ void log_process() {
     mkfifo(FIFO_FILE, 0666);
     int fifo_fd, log_fd;
     char buff[MAX_BUFFER_SIZE];
-
     fifo_fd  = open(FIFO_FILE, O_RDONLY);
     log_fd = open(LOG_FILE, O_WRONLY | O_CREAT | O_APPEND, 0666);
 
@@ -398,41 +402,4 @@ void log_process() {
     close(log_fd);
     close(fifo_fd);
     exit(0);
-}
-
-int main(int argc, char *argv[])
-{
-    /* Bỏ qua tín hiệu SIGPIPE */
-    signal(SIGPIPE, SIG_IGN);
-
-    if (argc < 2) {
-        printf("No port provided\n");
-        exit(EXIT_FAILURE);
-    }
-
-    int port = atoi(argv[1]);
-    pid_t pid;
-    Shared_data shared_data = {.head = 0, .tail = 0};
-    Thread_args thread_ares = {.port = port, .shared_data = &shared_data};
-    pthread_t threadconn, threaddata, threadstorage;
-
-    pid = fork();
-    if (pid == 0) {
-        log_process();
-
-    } else if (pid > 0) { //Parent process
-        printf("Im main process. My PID: %d\n", getpid());
-
-        pthread_create(&threadconn, NULL, &thr_connection, &thread_ares);
-        pthread_create(&threaddata, NULL, &thr_data, &shared_data);
-        pthread_create(&threadstorage, NULL, &thr_storage, &shared_data);
-        
-        wait(NULL);
-    }
-
-    pthread_join(threadconn, NULL);
-    pthread_join(threaddata, NULL);
-    pthread_join(threadstorage, NULL);
-
-    return 0;
 }
