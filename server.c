@@ -4,8 +4,8 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <sys/stat.h>
-#include <sys/socket.h>     //  Chứa cấu trúc cần thiết cho socket. 
-#include <netinet/in.h>     //  Thư viện chứa các hằng số, cấu trúc khi sử dụng địa chỉ trên internet
+#include <sys/socket.h>
+#include <netinet/in.h>
 #include <arpa/inet.h>
 #include <pthread.h>
 #include <fcntl.h>
@@ -40,6 +40,7 @@ typedef struct
     Sensor_data buffer[MAX_BUFFER_SIZE];
     int head;
     int tail;
+    int handler_counter;
 } Shared_data;
 
 typedef struct
@@ -92,7 +93,7 @@ int main(int argc, char *argv[])
     return 0;
 }
 
-//Hàm ghi vào FIFO
+/* Function write into FIFO */
 void *log_events(void *args) {
     char *message = (char *)args;
     pthread_mutex_lock(&log_lock);
@@ -108,10 +109,10 @@ void *log_events(void *args) {
     close(fd);
 }
 
-//Hàm ghi vào gateway.log
+/* Function write into gateway.log */
 void wr_log(void *args, int log_fd) {
     static int a = 0;
-    a++; //a là sequence_number
+    a++; // Sequence_number
     char *message = (char *)args;
     char buffer[MAX_BUFFER_SIZE];
 
@@ -124,25 +125,28 @@ void wr_log(void *args, int log_fd) {
     write(log_fd, buffer, strlen(buffer));
 }
 
-//Add data into buffer
+/* Add data into buffer */
 void add_data(Shared_data *shared, Sensor_data data) {
 
     shared->buffer[shared->tail] = data;
     shared->tail = (shared->tail + 1) % MAX_BUFFER_SIZE;
+    shared->buffer[shared->tail] = data;
+    shared->tail = (shared->tail + 1) % MAX_BUFFER_SIZE;
+    shared->handler_counter = 2;
 
 }
 
-//Get data from buffer
+/* Get data from buffer */
 Sensor_data get_data(Shared_data *shared) {
     Sensor_data data = {0};
 
     data = shared->buffer[shared->head];
     shared->head = (shared->head + 1) % MAX_BUFFER_SIZE;
-
+    shared->handler_counter -= 1;
     return data;
 }
 
-/* Hàm đặt socket ở chế đọ non-blocking */
+/* Set the socket to non-blocking mode */
 int make_socket_non_blocking(int socket_fd) {
     int flags = fcntl(socket_fd, F_GETFL, 0);
     if (flags == -1)
@@ -155,7 +159,7 @@ int make_socket_non_blocking(int socket_fd) {
     return 0;
 }
 
-//Connection manager thread
+/* Connection manager thread */
 static void *thr_connection(void *args) {
     Thread_args *ThreadArgs = (Thread_args *)args;
     Shared_data *shared = ThreadArgs->shared_data;
@@ -167,43 +171,43 @@ static void *thr_connection(void *args) {
     struct epoll_event event, events[MAX_EVENTS];
     char buffer[MAX_BUFFER_SIZE];
     
-    //Gắn giá trị 0 vào các byte của servaddr, sensoraddr
+    //Attaching a value of '0' to the bytes of serveaddr, sensoradd
     memset(&servaddr, 0, sizeof(struct sockaddr_in));
     memset(&sensoraddr, 0, sizeof(struct sockaddr_in));
 
-    //Tạo socket TCP
+    //Make socket TCP
     server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd == -1)
         handle_error("socket()");
 
-    //Ngăn lỗi: "address already in use"
+    //Prevent issues: "address already in use"
     if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt, sizeof(opt)) == -1)
         handle_error("setsockopt()");
 
-    //Khởi tạo địa chỉ cho cổng
+    //Initialize the address for the port
     servaddr.sin_family = AF_INET;
     servaddr.sin_addr.s_addr = INADDR_ANY;
     servaddr.sin_port = htons(ThreadArgs->port);
 
-    //Gắn socket vào cổng
+    //Bind socket to port
     if (bind(server_fd, (struct sockaddr *)&servaddr, sizeof(servaddr)) == -1)
         handle_error("bind()");
 
     if (listen(server_fd, 5) == -1)
         handle_error("listen()");
 
-    // Lấy thông tin sensor
+    //Get sensor's information
     ThreadArgs->len = sizeof(sensoraddr);
 
-    /* Make epoll instance */
+    // Make epoll instance
     epoll_fd = epoll_create1(0);
     if (epoll_fd == -1)
         handle_error("epoll_create1()");
 
-    /* Set server socket in non-blocking */
+    // Set server socket in non-blocking
     make_socket_non_blocking(server_fd);
 
-    /* Add server socket into epoll */
+    // Add server socket into epoll 
     event.events = EPOLLIN; // Following read
     event.data.fd = server_fd;
     if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, server_fd, &event) == -1)
@@ -211,31 +215,31 @@ static void *thr_connection(void *args) {
 
     printf("Connection Manager listening on port %d...\n", ThreadArgs->port);
 
-    /* Vòng lặp sự kiện chính */
+    /* Main event loop */
     while (1) {
-        // Chờ sự kiện
+        // Wait event
         event_count = epoll_wait(epoll_fd, events, MAX_EVENTS, -1);
         if (event_count == -1)
             handle_error("epoll_wait()");
 
-        // Duyệt qua các sự kiện xảy ra
+        // Browse event that occur
         for (int i = 0; i < event_count; i++){
             if (events[i].data.fd == server_fd) {
-                // Sự kiện trên server socket (kết nối mới)
+                // Events on server socket (there's a new connection)
                 while ((new_socket_fd = accept(server_fd, (struct sockaddr *)&sensoraddr, (socklen_t *)&ThreadArgs->len)) != -1) {
                     printf("New connection accepted on port %d\n", ThreadArgs->port); 
 
-                    // Ghi log new connection
+                    // Write new connection into FIFO
                     char log_message[MAX_BUFFER_SIZE];
                     snprintf(log_message, sizeof(log_message),
                             "There is a new sensor connection into port %d\n", ThreadArgs->port);
                     log_events(log_message);
 
-                    // Đặt socket client ở chế độ non-blocking
+                    // Set socket client to non-blocking mode
                     make_socket_non_blocking(new_socket_fd);
 
-                    // Thêm socket client vào epoll
-                    event.events = EPOLLIN | EPOLLET; // Theo dõi đọc, chế độ edge-triggered
+                    // Add socket client's inf into epoll
+                    event.events = EPOLLIN | EPOLLET; // Following read, edge-triggered mode
                     event.data.fd = new_socket_fd;
                     if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, new_socket_fd, &event) == -1) 
                         handle_error("epoll_ctl()");
@@ -247,7 +251,7 @@ static void *thr_connection(void *args) {
                 }
             
             } else {
-                //Sự kiện trên socket client
+                // Events on socket client
                 int client_fd = events[i].data.fd;
 
                 memset(buffer, 0, MAX_BUFFER_SIZE);
@@ -256,14 +260,14 @@ static void *thr_connection(void *args) {
                 if (bytes_read > 0) {
                     printf("Received from client: %s\n", buffer);
 
-                    // Giải mã dữ liệu từ sensor
+                    /* Handling data from sensor */
                     Sensor_data data;
                     sscanf(buffer, "%d %f", &data.SensorNodeID, &data.temperature);
 
-                    //Thêm dữ liệu vào shared buffer
+                    /* Add data into buffer */
                     pthread_mutex_lock(&lock);
                     add_data(shared, data);
-                    pthread_cond_signal(&cond);
+                    pthread_cond_broadcast(&cond);
                     pthread_mutex_unlock(&lock);
 
                 } else {
@@ -271,7 +275,7 @@ static void *thr_connection(void *args) {
                     
                     Sensor_data data = get_data(shared);
 
-                    //Ghi log closed
+                    /* Write there's a sensor disconnect into FIFO */
                     char log_message[MAX_BUFFER_SIZE];
                     snprintf(log_message, sizeof(log_message),
                             "The sensor has closed the connection\n");
@@ -288,17 +292,24 @@ static void *thr_connection(void *args) {
     return NULL;
 }
 
-//Data manager thread
+/* Data manager thread */
 static void *thr_data(void *args) {
-
     printf("i'm thread data\n");
+    Shared_data *shared = (Shared_data *)args;
+
     while (1) 
     {
         pthread_mutex_lock(&lock);
         pthread_cond_wait(&cond, &lock);
-    
-        Shared_data *shared = (Shared_data *)args;
-        Sensor_data data = get_data(shared);
+        Sensor_data data;
+        while (1)
+        {
+            if (shared->handler_counter) {
+                data = get_data(shared);
+                break;
+            }
+        }
+        pthread_mutex_unlock(&lock);
 
         if (data.SensorNodeID !=0 ) {
             char log_message[MAX_BUFFER_SIZE];
@@ -314,23 +325,21 @@ static void *thr_data(void *args) {
                 log_events(log_message);
             }
         }
-        printf("nodeid: %d\n", data.SensorNodeID);
-        printf("temperature: %.2f\n", data.temperature);
-        pthread_mutex_unlock(&lock);
     }
 }
 
 //Storage manager thread
 static void *thr_storage(void *args) {
     printf("i'm thread storage\n");
-    sqlite3 *db;        //Con trỏ cơ sở dữ liệu
-    char *errMsg = 0;   //Thông báo mã lỗi
-    int rc;             //Mã trả về từ SQLite
-    const char *sql;    //Câu lệnh SQL
+    Shared_data *shared = (Shared_data *)args;
+    sqlite3 *db;        // Databases pointer
+    char *errMsg = 0;   // Error issue message
+    int rc;             // Return issue from SQLite
+    const char *sql;    // Statement SQL
     char log_message[MAX_BUFFER_SIZE];
     char sql_query[MAX_BUFFER_SIZE];
 
-    rc = sqlite3_open(SQL_database, &db); //Mở hoặc tạo database
+    rc = sqlite3_open(SQL_database, &db); // Open or create database
     if (rc != SQLITE_OK) {
         snprintf(log_message, sizeof(log_message),
                 "Connection to SQL server lost.\n");
@@ -340,11 +349,11 @@ static void *thr_storage(void *args) {
                 "Connection to SQL server established.\n");
         log_events(log_message);
     }
-    //Thực thi câu lệnh SQL
+    // SQL statement execution
     sql =   "CREATE TABLE IF NOT EXISTS Sensor_data (" \
             "SENSOR_ID INTERGER PRIMARY KEY," \
             "Temperature FLOAT );";
-    //Tạo bảng
+    // Create data table
     rc = sqlite3_exec(db, sql, NULL, 0, &errMsg);
     if (rc != SQLITE_OK) {
         snprintf(log_message, sizeof(log_message),
@@ -359,12 +368,18 @@ static void *thr_storage(void *args) {
     while (1) {
         pthread_mutex_lock(&lock);
         pthread_cond_wait(&cond, &lock);
-        Shared_data *shared = (Shared_data *)args;
-        
-        Sensor_data data = get_data(shared);
+        Sensor_data data;
+        while (1)
+        {
+            if (shared->handler_counter) {
+                data = get_data(shared);
+                break;
+            }
+        }
+        pthread_mutex_unlock(&lock);
+
         if (data.SensorNodeID != 0) {
-            //Ghi dữ liệu vào SQL database
-            //Chèn dữ liệu vào bảng
+            //insert or replace sensor's data into SQL database
             snprintf(sql_query, sizeof(sql_query),
                     "INSERT OR REPLACE INTO Sensor_data (SENSOR_ID, Temperature) VALUES (%d, %.2f);",
                     data.SensorNodeID, data.temperature);
@@ -377,7 +392,7 @@ static void *thr_storage(void *args) {
                 log_events(log_message);
             }
         }
-        pthread_mutex_unlock(&lock);
+        
     }
     sqlite3_close(db);
 }
