@@ -17,44 +17,24 @@
 #include"log.h"
 
 int make_socket_non_blocking(int socket_fd);
-int creat_server_socket(int port);
+int create_server_socket(int port);
 
 /* Connection manager thread */
 void *thr_connection(void *args) {
     Thread_args *ThreadArgs = (Thread_args *)args;
     Shared_data *shared = ThreadArgs->shared_data;
 
-    int opt = 0;
     int event_count;
     int server_fd, new_socket_fd, epoll_fd;
-    struct sockaddr_in servaddr, sensoraddr;
+    struct sockaddr_in sensoraddr;
     struct epoll_event event, events[MAX_EVENTS];
     char buffer[MAX_BUFFER_SIZE];
     
-    //Attaching a value of '0' to the bytes of serveaddr, sensoradd
-    memset(&servaddr, 0, sizeof(struct sockaddr_in));
+    //Attaching a value of '0' to the bytes of sensoraddr
     memset(&sensoraddr, 0, sizeof(struct sockaddr_in));
 
     //Make socket TCP
-    server_fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (server_fd == -1)
-        handle_error("socket()");
-
-    //Prevent issues: "address already in use"
-    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt, sizeof(opt)) == -1)
-        handle_error("setsockopt()");
-
-    //Initialize the address for the port
-    servaddr.sin_family = AF_INET;
-    servaddr.sin_addr.s_addr = INADDR_ANY;
-    servaddr.sin_port = htons(ThreadArgs->port);
-
-    //Bind socket to port
-    if (bind(server_fd, (struct sockaddr *)&servaddr, sizeof(servaddr)) == -1)
-        handle_error("bind()");
-
-    if (listen(server_fd, 5) == -1)
-        handle_error("listen()");
+    server_fd = create_server_socket(ThreadArgs->port);
 
     //Get sensor's information
     ThreadArgs->len = sizeof(sensoraddr);
@@ -67,7 +47,7 @@ void *thr_connection(void *args) {
     // Set server socket in non-blocking
     make_socket_non_blocking(server_fd);
 
-    // Add server socket into epoll 
+    // Add server socket into epoll
     event.events = EPOLLIN; // Following read
     event.data.fd = server_fd;
     if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, server_fd, &event) == -1)
@@ -136,13 +116,10 @@ void *thr_connection(void *args) {
                     add_data(shared, data);
                     pthread_cond_broadcast(&cond);
                     pthread_mutex_unlock(&lock);
-
                 } 
                 else 
                 {
                     printf("Client disconnected\n");
-                    
-                    Sensor_data data = get_data(shared);
 
                     // Write there's a sensor disconnect into FIFO
                     char log_message[MAX_BUFFER_SIZE];
@@ -175,3 +152,37 @@ int make_socket_non_blocking(int socket_fd) {
 }
 
 /* Creat server's socket*/
+int create_server_socket(int port){
+    int opt = 0;
+    int server_fd;
+    struct sockaddr_in servaddr;
+
+    //Attaching a value of '0' to the bytes of serveaddr
+    memset(&servaddr, 0, sizeof(struct sockaddr_in));
+
+    //Make socket TCP
+    server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_fd == -1)
+        handle_error("socket()");
+
+    //Prevent issues: "address already in use"
+    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt, sizeof(opt)) == -1)
+        handle_error("setsockopt()");
+
+    //Initialize the address for the port
+    servaddr.sin_family = AF_INET;
+    servaddr.sin_addr.s_addr = INADDR_ANY;
+    servaddr.sin_port = htons(port);
+ 
+    //Bind socket to port
+    if (bind(server_fd, (struct sockaddr *)&servaddr, sizeof(servaddr)) == -1)
+        handle_error("bind()");
+
+    if (listen(server_fd, 5) == -1)
+        handle_error("listen()");
+
+    // Set server socket in non-blocking
+    make_socket_non_blocking(server_fd);
+
+    return server_fd;
+}
