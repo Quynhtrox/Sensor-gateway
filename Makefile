@@ -17,7 +17,7 @@ DATA_FILE = logFIFO gateway.log database.db
 SERVER = server
 SENSOR = sensor
 
-OBJ_FILES := $(OBJ_DIR)/shared_data.o $(OBJ_DIR)/log.o $(OBJ_DIR)/handler_sensor.o $(OBJ_DIR)/connection_manager.o $(OBJ_DIR)/data_manager.o $(OBJ_DIR)/storage_manager.o
+OBJ_FILES := $(OBJ_DIR)/shared_data.o $(OBJ_DIR)/log.o $(OBJ_DIR)/handler_sensor.o $(OBJ_DIR)/connection_manager.o $(OBJ_DIR)/data_manager.o $(OBJ_DIR)/storage_manager.o $(OBJ_DIR)/wait_sensor_signal.o
 
 # Create dir
 make_dir:
@@ -26,6 +26,7 @@ make_dir:
 # Create object files
 create_obj:
 	$(CC) $(C_FLAGS) -o $(OBJ_DIR)/shared_data.o $(SRC_DIR)/shared_data.c
+	$(CC) $(C_FLAGS) -o $(OBJ_DIR)/wait_sensor_signal.o $(SRC_DIR)/wait_sensor_signal.c
 	$(CC) $(C_FLAGS) -o $(OBJ_DIR)/log.o $(SRC_DIR)/log.c
 	$(CC) $(C_FLAGS) -o $(OBJ_DIR)/handler_sensor.o $(SRC_DIR)/handler_sensor.c
 	$(CC) $(C_FLAGS) -o $(OBJ_DIR)/connection_manager.o $(SRC_DIR)/connection_manager.c
