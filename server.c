@@ -23,10 +23,6 @@
 #include "data_manager.h"
 #include "storage_manager.h"
 
-extern pthread_mutex_t log_lock;
-extern pthread_mutex_t lock;
-extern pthread_cond_t cond;
-
 void log_process();
 
 int main(int argc, char *argv[])
