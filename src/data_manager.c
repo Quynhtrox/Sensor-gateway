@@ -9,7 +9,6 @@ void send_temp_report(Sensor_data data);
 
 /* Data manager thread */
 void *thr_data(void *args) {
-    printf("i'm thread data\n");
     Shared_data *shared = (Shared_data *)args;
 
     while (1)

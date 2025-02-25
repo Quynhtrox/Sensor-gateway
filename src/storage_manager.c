@@ -10,7 +10,6 @@ void send_data(sqlite3 *db, Sensor_data data);
 
 /* Storage manager thread */
 void *thr_storage(void *args) {
-    printf("i'm thread storage\n");
     Shared_data *shared = (Shared_data *)args;
     sqlite3 *db;
 
