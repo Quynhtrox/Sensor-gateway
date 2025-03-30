@@ -1,5 +1,4 @@
 PRJ_NAME = SenSor_System
-SHARED_LIB_NAME = libserver.so
 
 .PHONY: make_dir create_obj
 
